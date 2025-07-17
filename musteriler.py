@@ -1,13 +1,12 @@
-import sys
-sys.path.append("..")
 from datetime import date
 from typing import Optional
-from fastapi import  Depends, HTTPException , APIRouter
+from fastapi import Depends, HTTPException, APIRouter, Query
 import models
-from database import engine , SessionLocal
+from database import engine, get_db
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from pydantic import BaseModel, Field
-from .auth import get_current_user, get_user_exception
+from auth import get_current_user, get_user_exception
 
 router = APIRouter(
     prefix="/musteriler",
@@ -16,16 +15,6 @@ router = APIRouter(
 )
 
 models.Base.metadata.create_all(bind=engine)
-
-
-
-def get_db():
-    try:
-        db= SessionLocal()
-        yield db
-
-    finally:
-        db.close()
 
 
 
@@ -49,18 +38,59 @@ class Musteri(BaseModel):
 
 
 @router.get("/")
-async def read_all(db: Session = Depends(get_db)):
-    return db.query(models.Musteri).all()
-
+async def read_all_customers_paginated(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of records to return"),
+    search: Optional[str] = Query(None, description="Search term for company name, email, or contact"),
+    category: Optional[str] = Query(None, description="Filter by category"),
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get customers with pagination and filtering"""
+    if user is None:
+        raise get_user_exception()
+    
+    query = db.query(models.Musteri).filter(
+        models.Musteri.owner_id == user.get("id")
+    )
+    
+    # Add search filter
+    if search:
+        search_filter = or_(
+            models.Musteri.firmaAdi.ilike(f"%{search}%"),
+            models.Musteri.email.ilike(f"%{search}%"),
+            models.Musteri.yetkili.ilike(f"%{search}%")
+        )
+        query = query.filter(search_filter)
+    
+    # Add category filter
+    if category:
+        query = query.filter(models.Musteri.kategori == category)
+    
+    # Get total count for pagination info
+    total = query.count()
+    
+    # Apply pagination
+    customers = query.offset(skip).limit(limit).all()
+    
+    return {
+        "customers": customers,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": skip + limit < total
+    }
 
 
 @router.get("/user")
 async def read_all_by_user(user: dict = Depends(get_current_user),
                            db: Session = Depends(get_db)):
+    """Deprecated: Use / endpoint with pagination instead"""
     if user is None:
         raise get_user_exception()
     return db.query(models.Musteri)\
         .filter(models.Musteri.owner_id == user.get("id"))\
+        .limit(100)\
         .all()
 
 
@@ -154,7 +184,7 @@ async def delete_musteri(musteri_id: int,
     if user is None:
         raise get_user_exception()
 
-    musteri_model = db.query(models.Musteriler)\
+    musteri_model = db.query(models.Musteri)\
         .filter(models.Musteri.id == musteri_id)\
         .filter(models.Musteri.owner_id == user.get("id"))\
         .first()

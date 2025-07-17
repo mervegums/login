@@ -1,11 +1,9 @@
-import sys
-sys.path.append("..")
-from fastapi import Depends, APIRouter
+from fastapi import Depends, APIRouter, Query
 import models
-from database import engine, SessionLocal
-from sqlalchemy.orm import  Session
+from database import engine, get_db
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from .auth import get_current_user, get_user_exception, verify_password, get_password_hash
+from auth import get_current_user, get_user_exception, verify_password, get_password_hash
 
 
 router = APIRouter(
@@ -16,15 +14,6 @@ router = APIRouter(
 
 models.Base.metadata.create_all(bind=engine)
 
-
-
-def get_db():
-    try:
-        db= SessionLocal()
-        yield db
-    finally:
-        db.close()
-
 class UserVerification(BaseModel):
     username: str
     password: str
@@ -32,8 +21,27 @@ class UserVerification(BaseModel):
 
 
 @router.get("/")
-async def read_all(db: Session = Depends(get_db)):
-    return db.query(models.Users).all()
+async def read_all_users_paginated(
+    skip: int = Query(0, ge=0, description="Number of records to skip"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of records to return"),
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get users with pagination (admin only feature)"""
+    if user is None:
+        raise get_user_exception()
+    
+    # Note: In a real app, you'd check if user has admin privileges
+    total = db.query(models.Users).count()
+    users = db.query(models.Users).offset(skip).limit(limit).all()
+    
+    return {
+        "users": users,
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "has_more": skip + limit < total
+    }
 
 
 @router.get("/user/{user_id}")

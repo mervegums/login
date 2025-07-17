@@ -1,21 +1,22 @@
-import sys
-sys.path.append("..")
-
-from fastapi import  Depends, HTTPException, status, APIRouter
+from fastapi import Depends, HTTPException, status, APIRouter
 from pydantic import BaseModel
 from typing import Optional
 import models
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from database import SessionLocal, engine
+from database import SessionLocal, engine, get_db
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from datetime import datetime, timedelta
 from jose import jwt, JWTError
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
-
-SECRET_KEY= "KlgH6AzYDeZeGwD288to79I3vTHT8wp8"
-ALGORITHM="HS256"
+# Use environment variables for security
+SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret-key-change-in-production")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
 
 
@@ -24,25 +25,22 @@ class CreateUser(BaseModel):
     email: Optional[str]
     password: str
 
-bcrypt_context = CryptContext(schemes = ["bcrypt"], deprecated= "auto")
+# Password context with optimized rounds for security vs speed
+bcrypt_context = CryptContext(
+    schemes=["bcrypt"], 
+    deprecated="auto",
+    bcrypt__rounds=12  # Optimize for security vs speed
+)
 
 models.Base.metadata.create_all(bind=engine)
 
-oauth2_bearer = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_bearer = OAuth2PasswordBearer(tokenUrl="auth/token")
 
 router = APIRouter(
     prefix="/auth",
     tags=["auth"],
-    responses={401:{"user": "yetkilendirilemedi"}}
-)
-
-
-def get_db():
-    try:
-        db= SessionLocal()
-        yield db
-    finally:
-        db.close()    
+    responses={401: {"description": "Unauthorized"}}
+)    
 
 
 def get_password_hash(password):
@@ -65,12 +63,12 @@ def authenticate_user(username:str, password:str, db):
 
 
 
-def create_access_token( username: str, user_id: int, expires_delta: Optional[timedelta] = None):
+def create_access_token(username: str, user_id: int, expires_delta: Optional[timedelta] = None):
     encode = {"sub": username, "id": user_id}
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
+        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     encode.update({"exp": expire})
     return jwt.encode(encode, SECRET_KEY, algorithm=ALGORITHM)   
 
@@ -108,12 +106,16 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
                                  db: Session = Depends(get_db)):
     user = authenticate_user(form_data.username, form_data.password, db)
     if not user:
-        raise HTTPException(status_code=404,detail="Kullanıcı bulunamadı")
-    token_expires = timedelta(minutes=20)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     token = create_access_token(user.username,
                                 user.id,
                                 expires_delta=token_expires)
-    return {"token": token}
+    return {"access_token": token, "token_type": "bearer"}
 
 
 
